@@ -1,68 +1,65 @@
 from PIL import Image
 import numpy as np
+import matplotlib.pyplot as plt
+from skimage import measure
+from scipy.ndimage import binary_dilation
 from scipy.interpolate import splprep, splev
+import xml.etree.ElementTree as ET
+import base64
+from io import BytesIO
 
-def smooth_points_spline(points, s=3, skip=10):
-    """ Generate smoother path commands using spline curves with skipping """
-    if len(points) < 3:
-        return []  # Not enough points to smooth
-    # Reduce the number of points by skipping
-    points = np.array(points[::skip])
-    tck, u = splprep([points[:, 0], points[:, 1]], s=s)  # Fit spline to reduced points
-    unew = np.linspace(0, 1, num=1000)  # Increase the number of points for smoothness
-    out = splev(unew, tck)
-    path_commands = ["M {} {}".format(out[0][0], out[1][0])]  # Move to the first point
-    path_commands += ["L {} {}".format(x, y) for x, y in zip(out[0], out[1])]  # Line to each point
-    return path_commands
+def create_svg_with_text(image_path, output_svg_path, text, dilation_iterations=5, smoothing_factor=5000, font_size="24px", letter_spacing="0px", font_style="Arial"):
 
-# Load the image with transparency
-image_path = 'no-bg-1714097572343.png'
-image = Image.open(image_path)
-image = image.convert("RGBA")  # Ensure it's in RGBA format
+    image = Image.open(image_path).convert("RGBA")
+    
+    buffered = BytesIO()
+    image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
 
-width, height = image.size
-pixels = image.load()
+    data = np.array(image)
 
-# Collect edge points
-left_edges = []
-right_edges = []
-for y in range(height):
-    left_found = None
-    right_found = None
-    for x in range(width):
-        _, _, _, a = pixels[x, y]
-        if a != 0:  # This pixel is not transparent
-            if left_found is None:
-                left_found = (x, y)
-            right_found = (x, y)  # Update right_found to the last non-transparent pixel
+    mask = data[:, :, 3] != 0
 
-    if left_found:
-        left_edges.append(left_found)
-    if right_found:
-        right_edges.append(right_found)
+    mask = binary_dilation(mask, iterations=dilation_iterations)
 
-# Reverse the right edges for proper path continuity
-right_edges.reverse()
-#left_edges.reverse()
-# Smooth both edge lists with a skipping value
-left_path = smooth_points_spline(left_edges, s=2, skip=10)  # Adjust `s` and `skip` as needed
-right_path = smooth_points_spline(right_edges, s=2, skip=10)
 
-# Create the SVG path commands, combining both smoothed paths
-svg_path = " ".join(left_path + right_path)
+    contours = measure.find_contours(mask, 0.5)
+    max_contour = max(contours, key=len)
 
-# Create the SVG output
-svg_output = f'''
-<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
-    <path id="myPath" d="{svg_path}" fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round"/>
-    <text fill="red" font-size="65" font-family="Arial" dominant-baseline="hanging" text-anchor="start" letter-spacing="36px">
-        <textPath href="#myPath" startOffset="20%" dy="10">
-           Timothee Chalamet Dune Two
-        </textPath>
-    </text>
-</svg>
-'''
+    tck, u = splprep([max_contour[:, 1], max_contour[:, 0]], s=smoothing_factor)
+    u_new = np.linspace(u.min(), u.max(), 1000)
+    smooth_contour = np.array(splev(u_new, tck)).T
 
-# Save to a file or output as needed
-with open('output.svg', 'w') as f:
-    f.write(svg_output)
+    svg = ET.Element('svg', width=str(image.width), height=str(image.height), xmlns="http://www.w3.org/2000/svg", xmlns_xlink="http://www.w3.org/1999/xlink")
+
+    image_tag = ET.SubElement(svg, 'image', href="data:image/png;base64," + img_str, width=str(image.width), height=str(image.height))
+
+
+    path_data = "M " + " L ".join(f"{point[0]:.1f},{point[1]:.1f}" for point in smooth_contour) + " Z"
+    path_tag = ET.SubElement(svg, 'path', id="textPath", d=path_data, fill="none")
+
+
+    text_tag = ET.SubElement(svg, 'text', fill="black", style=f"font-size:{font_size}; letter-spacing:{letter_spacing}; font-family:{font_style};")
+    text_path_tag = ET.SubElement(text_tag, 'textPath', href="#textPath")
+    text_path_tag.set("startOffset", "0%")
+    text_path_tag.text = text
+
+
+    tree = ET.ElementTree(svg)
+    tree.write(output_svg_path)
+
+
+    plt.imshow(mask, cmap='gray')
+    plt.plot(smooth_contour[:, 0], smooth_contour[:, 1], linewidth=2, color='red')
+    plt.title('Smoothed and Dilated Contour with Text')
+    plt.axis('off')
+    plt.show()
+
+image_path = 'image.png'  
+output_svg_path = 'output.svg'  
+text = "TIMOTHEE CHALAMET " * 5 
+font_size = "40px"  
+letter_spacing = "10px"  
+font_style = "Roboto" 
+
+create_svg_with_text(image_path, output_svg_path, text, font_size=font_size, letter_spacing=letter_spacing, font_style=font_style)
